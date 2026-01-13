@@ -252,6 +252,8 @@ def prune_wanda_outlier_plus(args, model, tokenizer, device=torch.device("cuda:0
 
     layers = model.model.layers
 
+    num_total_layers = len(layers)
+
     D_list = []
     R_raw = []
 
@@ -259,6 +261,12 @@ def prune_wanda_outlier_plus(args, model, tokenizer, device=torch.device("cuda:0
     risk_k = args.risk_k
     risk_probe = args.risk_probe
     risk_decay = args.risk_decay
+    risk_decay_type = args.risk_decay_type
+    assert risk_decay_type in ["exponential", "linear"], "Invalid risk_decay_type"
+
+    desired_sparsity_ratio = args.sparsity_ratio
+    consider_current_layer_in_risk = args.consider_current_layer_in_risk
+    risk_decay_beta = args.risk_decay_beta
 
     risk_nsamples = getattr(args, "risk_nsamples", min(args.nsamples, 16))  # to keep runtime manageable
 
@@ -333,8 +341,12 @@ def prune_wanda_outlier_plus(args, model, tokenizer, device=torch.device("cuda:0
 
                 # base_outs[t] corresponds to layer (i+t)
                 # Compare downstream layers: i+1..j_end  => t=1..(j_end-i)
-                for t in range(1, len(base_outs)):
-                    w = (risk_decay ** (t - 1))
+                start_t = 0 if consider_current_layer_in_risk else 1
+                for t in range(start_t, len(base_outs)):
+                    if risk_decay_type == "linear":
+                        w = desired_sparsity_ratio - 0.5 * risk_decay_beta * (num_total_layers - 1) + risk_decay_beta * (t - 1)
+                    else:  # exponential
+                        w = (risk_decay ** (t - 1))
                     d = _rel_l2(base_outs[t], pert_outs[t])
                     risk_sum += w * d
                     w_sum += w

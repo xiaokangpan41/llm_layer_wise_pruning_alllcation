@@ -119,7 +119,7 @@ def run_once_prune_eval(args, model, tokenizer, device, prune_n=0, prune_m=0):
     return float(ppl)
 
 def load_done_keys_from_outcsv(out_csv):
-    """Return set of keys 'k|probe|decay|alpha' already in out_csv."""
+    """Return set of keys 'k|probe|decay|decay_type|decay_beta|alpha|consider_current' already in out_csv."""
     done = set()
     if not os.path.exists(out_csv) or os.path.getsize(out_csv) == 0:
         return done
@@ -130,9 +130,12 @@ def load_done_keys_from_outcsv(out_csv):
                 k = str(row["risk_k"]).strip()
                 p = str(row["risk_probe"]).strip()
                 d = str(row["risk_decay"]).strip()
+                dt = str(row["risk_decay_type"]).strip()
+                db = str(row.get("risk_decay_beta", "")).strip()
                 a = str(row["risk_alpha"]).strip()
-                if k and p and d and a:
-                    done.add(f"{k}|{p}|{d}|{a}")
+                c = str(row["consider_current_layer_in_risk"]).strip()
+                if k and p and d and dt and db and a and c:
+                    done.add(f"{k}|{p}|{d}|{dt}|{db}|{a}|{c}")
             except Exception:
                 pass
     return done
@@ -141,7 +144,11 @@ def ensure_outcsv_header(out_csv):
     if (not os.path.exists(out_csv)) or os.path.getsize(out_csv) == 0:
         with open(out_csv, "w", newline="") as f:
             w = csv.writer(f)
-            w.writerow(["risk_k", "risk_probe", "risk_decay", "risk_alpha", "ppl", "exit_code", "seconds"])
+            w.writerow([
+                "risk_k", "risk_probe", "risk_decay", "risk_decay_type", "risk_decay_beta",
+                "risk_alpha", "consider_current_layer_in_risk",
+                "ppl", "exit_code", "seconds"
+            ])
 
 
 
@@ -181,7 +188,28 @@ def main(argv=None):
         "--risk_decay",
         type=float,
         default=0.9,
-        help="Exponential decay factor for downstream layers when aggregating propagation risk"
+        help="Exponential decay factor for downstream layers when aggregating propagation risk, 0.9 for exponential decay"
+    )
+
+    parser.add_argument(
+        "--risk_decay_beta",
+        type=float,
+        default=0.01,
+        help="Linear decay beta for downstream layers when aggregating propagation risk (only used if risk_decay_type is linear), (0, 0.19] for linear decay"
+    )
+
+    parser.add_argument(
+        "--risk_decay_type",
+        type=str,
+        default="exponential",  # or "linear"
+        help="Type of decay to use for downstream layers when aggregating propagation risk"
+    )
+
+    parser.add_argument(
+        "--consider_current_layer_in_risk",
+        type=bool,
+        default=False,
+        help="Whether to include the current layer in the propagation risk calculation"
     )
 
     parser.add_argument(
@@ -467,9 +495,12 @@ def main(argv=None):
                 k = int(float(row["risk_k"]))
                 probe = float(row["risk_probe"])
                 decay = float(row["risk_decay"])
+                decay_type = str(row["risk_decay_type"]).strip()
+                decay_beta = float(row["risk_decay_beta"])
                 alpha = float(row["risk_alpha"])
+                consider_current = str(row["consider_current_layer_in_risk"]).strip()
 
-                key = f"{k}|{probe}|{decay}|{alpha}"
+                key = f"{k}|{probe}|{decay}|{decay_type}|{decay_beta}|{alpha}|{consider_current}"
                 if key in done:
                     print(f"[SKIP] {key}")
                     continue
@@ -478,9 +509,12 @@ def main(argv=None):
                 args.risk_k = k
                 args.risk_probe = probe
                 args.risk_decay = decay
+                args.risk_decay_type = decay_type
+                args.risk_decay_beta = decay_beta
                 args.risk_alpha = alpha
+                args.consider_current_layer_in_risk = consider_current
 
-                print(f"\n[RUN ] k={k}, probe={probe}, decay={decay}, alpha={alpha}")
+                print(f"\n[RUN ] k={k}, probe={probe}, decay={decay}, decay_type={decay_type}, decay_beta={decay_beta}, alpha={alpha}, consider_current={consider_current}")
                 t0 = time.time()
 
                 # IMPORTANT: restore clean model (avoid interference)
@@ -499,7 +533,11 @@ def main(argv=None):
                 # append result
                 with open(args.out_csv, "a", newline="") as wf:
                     w = csv.writer(wf)
-                    w.writerow([k, probe, decay, alpha, ppl, exit_code, f"{sec:.2f}"])
+                    w.writerow([
+                        k, probe, decay, args.risk_decay_type, args.risk_decay_beta,
+                        alpha, args.consider_current_layer_in_risk,
+                        ppl, exit_code, f"{sec:.2f}"
+                    ])
                     wf.flush()
 
                 done.add(key)
