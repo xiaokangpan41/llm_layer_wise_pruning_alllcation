@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PYTHON="/home/xiaokang/miniconda3/envs/prune_llm/bin/python"
-MAIN="/home/xiaokang/OWL/OWL-version1/OWL-main/main.py"
-MODEL="/home/xiaokang/llama_hf/Llama-2-7b-hf"
+export CUDA_VISIBLE_DEVICES="0,1"
+export HF_ENDPOINT=https://hf-mirror.com
+
+PYTHON="/home/pxiaokang/miniconda3/envs/risk-prune/bin/python"
+MAIN="/home/pxiaokang/risk-prune/main.py"
+MODEL="/data1/LLM_models/LLM/Llama/llama2-7b-hf"
 
 OUT_CSV="risk_sweep.csv"
 OUT_LOG="risk_sweep.log"
@@ -12,7 +15,7 @@ OUT_LOG="risk_sweep.log"
 RISK_K_LIST=(1 3 5)
 RISK_PROBE_LIST=(0.01 0.03 0.05 0.07)
 RISK_DECAY_LIST=(0.1 0.3 0.5 0.7 0.8 0.9)
-RISK_DECAY_TYPE_LIST=("exponential" "linear")
+RISK_DECAY_TYPE_LIST=("linear" "exponential")
 RISK_DECAY_BETA_LIST=(0.01 0.019 0.001)
 RISK_ALPHA_LIST=(0.1 0.2 0.3 0.4)
 CONSIDER_CURRENT_LAYER_LIST=("False" "True")

@@ -39,7 +39,6 @@ from transformers import (
     default_data_collator,
     get_scheduler,
 )
-from transformers.utils import check_min_version, get_full_repo_name, send_example_telemetry
 from transformers.utils.versions import require_version
 
 MODEL_CONFIG_CLASSES = list(MODEL_MAPPING.keys())
