@@ -3,7 +3,6 @@ set -euo pipefail
 
 export CUDA_VISIBLE_DEVICES="0,1"
 export HF_DATASETS_CACHE="/data1/LLM_models/dataset/corpus"
-export HF_DATASETS_OFFLINE=1
 
 PYTHON="/home/pxiaokang/miniconda3/envs/risk-prune/bin/python"
 MAIN="/home/pxiaokang/risk-prune/main.py"

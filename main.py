@@ -1,5 +1,10 @@
 import argparse
 import os
+
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+os.environ["HF_DATASETS_CACHE"] = "/data1/LLM_models/dataset/corpus"
+
 import numpy as np
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM,LlamaTokenizer

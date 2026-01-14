@@ -4,9 +4,7 @@ import os
 import numpy as np
 import random
 import torch
-# from datasets import load_dataset
-
-from modelscope.msdatasets import MsDataset
+from datasets import load_dataset
 
 
 def set_seed(seed: int):
@@ -28,8 +26,6 @@ def get_wikitext2(nsamples: int, seed: int, seqlen: int, tokenizer):
       testenc: tokenized full test set (pt tensors)
     """
     set_seed(seed)
-
-    raise NotImplementedError("MsDataset does not support wikitext dataset currently.")
 
     traindata = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
     testdata = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
@@ -101,38 +97,23 @@ def get_c4_shard(
         "train": train_path,
         "validation": val_path,
     }
-
-    traindata = MsDataset.load(
-        'allenai/c4',
-        'en',
-        data_files=data_files,
-        split='train',
-        cache_dir=cache_dir,
-    )
-    valdata = MsDataset.load(
-        'allenai/c4',
-        'en',
-        data_files=data_files,
-        split='validation',
-        cache_dir=cache_dir,
-    )
     # Load only the selected shards
-    # traindata = load_dataset(
-    #     "allenai/c4",
-    #     "en",
-    #     data_files=data_files,
-    #     split="train",
-    #     cache_dir=cache_dir,
-    #     verification_mode="no_checks",
-    # )
-    # valdata = load_dataset(
-    #     "allenai/c4",
-    #     "en",
-    #     data_files=data_files,
-    #     split="validation",
-    #     cache_dir=cache_dir,
-    #     verification_mode="no_checks",
-    # )
+    traindata = load_dataset(
+        "allenai/c4",
+        "en",
+        data_files=data_files,
+        split="train",
+        cache_dir=cache_dir,
+        verification_mode="no_checks",
+    )
+    valdata = load_dataset(
+        "allenai/c4",
+        "en",
+        data_files=data_files,
+        split="validation",
+        cache_dir=cache_dir,
+        verification_mode="no_checks",
+    )
 
     # Build trainloader (random contiguous blocks)
     trainloader = []
