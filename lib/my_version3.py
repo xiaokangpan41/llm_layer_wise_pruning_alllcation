@@ -41,25 +41,30 @@ def _forward_range(layers, start, end, h, *, attention_mask=None, position_ids=N
 
 
 @contextmanager
-def _perturb_layer_magnitude(layer: nn.Module, probe_ratio: float = 0.02):
+def _perturb_layer_magnitude(layers: list[nn.Module], probe_ratio: float = 0.02, desired_sparsity_ratio: float = 0.7, perturb_following: bool = False):
     """
     Temporarily zero out the smallest |w| weights in every nn.Linear in this layer.
     This is ONLY for risk probing, not final pruning.
     """
+    layers_to_perturb = layers if perturb_following else [layers[0]]
     backups = []
-    with torch.no_grad():
-        for m in layer.modules():
-            if isinstance(m, nn.Linear):
-                W = m.weight
-                backups.append((W, W.data.clone()))
 
-                flat = W.data.abs().view(-1)
-                k = int(probe_ratio * flat.numel())
-                if k <= 0:
-                    continue
-                thresh = torch.kthvalue(flat, k).values
-                mask = (W.data.abs() > thresh).to(W.data.dtype)
-                W.data.mul_(mask)
+    with torch.no_grad():
+        for idx, layer in enumerate(layers_to_perturb):
+            for m in layer.modules():
+                if isinstance(m, nn.Linear):
+                    W = m.weight
+                    backups.append((W, W.data.clone()))
+
+                    flat = W.data.abs().view(-1)
+                    ratio = probe_ratio if idx == 0 else desired_sparsity_ratio
+                    k = int(ratio * flat.numel())
+                    if k <= 0:
+                        continue
+                    thresh = torch.kthvalue(flat, k).values
+                    mask = (W.data.abs() > thresh).to(W.data.dtype)
+                    W.data.mul_(mask)
+    
     try:
         yield
     finally:
@@ -314,6 +319,8 @@ def compute_propagation_risk_R_i(
         risk_decay_type: str,          # "linear" | "exponential"
         risk_decay: float,             # used when exponential
         risk_decay_beta: float,        # used when linear
+        desired_sparsity_ratio: float,
+        perturb_following: bool = False,
 ):
     """
     Compute propagation risk R_i for layer `layer_idx` by:
@@ -343,7 +350,7 @@ def compute_propagation_risk_R_i(
             position_ids=position_ids,
             is_opt=is_opt,
         )
-        with _perturb_layer_magnitude(layers[i], probe_ratio=risk_probe):
+        with _perturb_layer_magnitude(layers[i:j_end], probe_ratio=risk_probe, desired_sparsity_ratio=desired_sparsity_ratio, perturb_following=perturb_following):
             pert_outs = _forward_range(
                 layers, i, j_end, x0,
                 attention_mask=attention_mask,
@@ -470,6 +477,8 @@ def prune_wanda_outlier_plus(args, model, tokenizer, device=torch.device("cuda:0
             risk_decay_type=risk_decay_type,
             risk_decay=risk_decay,
             risk_decay_beta=risk_decay_beta,
+            desired_sparsity_ratio=desired_sparsity_ratio,
+            perturb_following=args.perturb_following,
         )
         R_raw.append(float(R_i))
 
@@ -492,7 +501,7 @@ def prune_wanda_outlier_plus(args, model, tokenizer, device=torch.device("cuda:0
     all_layer_ratio = D_hat.copy()
     all_layer_ratio = ((all_layer_ratio - all_layer_ratio.min()) *
                        (1.0 / (all_layer_ratio.max() - all_layer_ratio.min() + 1e-12) * args.Lamda * 2))
-    all_layer_ratio = all_layer_ratio - np.mean(all_layer_ratio) + (1 - args.sparsity_ratio)
+    all_layer_ratio = all_layer_ratio - np.mean(all_layer_ratio) + (1 - desired_sparsity_ratio)
 
     print("after adjustment", all_layer_ratio, "mean", np.mean(all_layer_ratio),
           "max", np.max(all_layer_ratio), "min", np.min(all_layer_ratio))
