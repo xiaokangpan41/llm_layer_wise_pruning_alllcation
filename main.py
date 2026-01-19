@@ -21,7 +21,7 @@ from lib.prune_all import prune_wanda_outlier_structure_special,prune_wanda_outl
 from lib.eval import eval_ppl
 import sys
 print('# of gpus: ', torch.cuda.device_count())
-from lib.my_version1 import prune_wanda_outlier_plus
+from lib.my_version3 import prune_wanda_outlier_plus
 import os, csv, gc,  time
 
 import json
@@ -227,6 +227,13 @@ def main(argv=None):
         type=float,
         default=0.3,
         help="Weight for propagation risk in D_hat = (1-alpha) * D + alpha * R"
+    )
+
+    parser.add_argument(
+        "--perturb_following",
+        type=bool,
+        default=False,
+        help="Whether to perturb following layers when estimating propagation risk"
     )
 
     ########################################### for train
