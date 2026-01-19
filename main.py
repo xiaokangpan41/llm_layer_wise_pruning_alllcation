@@ -1,10 +1,17 @@
 import argparse
 import os
 
-os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
-os.environ["HF_DATASETS_CACHE"] = "/data1/LLM_models/dataset/corpus"
+# os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+# os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+# os.environ["HF_DATASETS_CACHE"] = "/data1/LLM_models/dataset/corpus"
 
+print("[DEBUG] running:", os.path.abspath(__file__))
+print("[DEBUG] HF_ENDPOINT env:", os.getenv("HF_ENDPOINT"))
+
+from huggingface_hub import HfApi
+print("[DEBUG] HfApi endpoint:", HfApi().endpoint)
+
+import csv
 import numpy as np
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM,LlamaTokenizer
@@ -116,7 +123,7 @@ def run_once_prune_eval(args, model, tokenizer, device, prune_n=0, prune_m=0):
     print("*" * 30)
 
     ppl = eval_ppl(model, tokenizer, device)
-    print(f"ppl on wikitext {ppl}")
+    # print(f"ppl on wikitext {ppl}")
 
     torch.cuda.empty_cache()
     gc.collect()
@@ -158,7 +165,6 @@ def ensure_outcsv_header(out_csv):
 
 
 def main(argv=None):
-
     ########################## for prune ################################
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', type=str, help='LLaMA model')
@@ -171,7 +177,6 @@ def main(argv=None):
     parser.add_argument('--use_variant', action="store_true", help="whether to use the wanda variant described in the appendix")
     parser.add_argument('--save', type=str, default=None, help='Path to save results.')
     parser.add_argument('--save_model', type=str, default=None, help='Path to save the pruned model.')
-
 
     # ===== Propagation Risk (for OWL + propagation-aware sparsity) =====
     parser.add_argument(
@@ -215,6 +220,7 @@ def main(argv=None):
         default=False,
         help="Whether to include the current layer in the propagation risk calculation"
     )
+
 
     parser.add_argument(
         "--risk_alpha",
@@ -381,8 +387,6 @@ def main(argv=None):
 
 
 
-
-
     #### saving parameters #####
 
     parser.add_argument(
@@ -391,7 +395,6 @@ def main(argv=None):
         default=None,
 
     )
-
 
 
     #### data parameters #####
@@ -410,9 +413,9 @@ def main(argv=None):
 
 
     parser.add_argument(
-            '--Hyper_m',
-            type=float,
-            default=3, )
+        '--Hyper_m',
+        type=float,
+        default=3, )
 
     parser.add_argument(
         "--outlier_by_activation", action="store_true", help="outlier_by_activation")
@@ -424,16 +427,19 @@ def main(argv=None):
 
 
 
-    # ✅ 关键：外部传 argv 就用外部的；否则用默认的
+    # 关键：外部传 argv 就用外部的；否则用默认的
     args = parser.parse_args(argv)
 
-
     print("[DEBUG] Parsed args:")
-    print("  nsamples   =", args.nsamples)
-    print("  risk_alpha     =", args.risk_alpha)
-    print("  risk_k     =", args.risk_k)
-    print("  risk_probe =", args.risk_probe)
-    print("  risk_decay =", args.risk_decay)
+    print("  nsamples               =", args.nsamples)
+
+    print("  risk_k                 =", args.risk_k)
+    print("  risk_probe             =", args.risk_probe)
+    print("  risk_decay             =", args.risk_decay)
+    print("  risk_decay_type        =", args.risk_decay_type)
+    print("  risk_decay_beta        =", args.risk_decay_beta)
+    print("  risk_alpha             =", args.risk_alpha)
+    print("  consider_current_layer_in_risk =", args.consider_current_layer_in_risk)
 
     run_t0 = time.time()
 
@@ -449,10 +455,9 @@ def main(argv=None):
         prune_n, prune_m = map(int, args.sparsity_type.split(":"))
 
 
-    model_name = args.model.split("/")[-1]
+    # model_name = args.model.split("/")[-1]
     # print(f"loading llm model {args.model}")
     model = get_llm(args.model, args.cache_dir)
-
 
     # print ("model is =================================================================================")
     # print (model.__class__.__name__)
@@ -553,14 +558,15 @@ def main(argv=None):
     # Single-run mode (old behavior)
     # =======================
     ppl = run_once_prune_eval(args, model, tokenizer, device, prune_n=prune_n, prune_m=prune_m)
+
     sys.stdout.flush()
     run_t1 = time.time()
     elapsed = run_t1 - run_t0
+
     print(f"[TIME] this run took {elapsed:.2f} seconds ({elapsed/60:.2f} min)")
-    print(f"final ppl on wikitext {ppl}")
+    print(f"[RESULT] final ppl on wikitext = {ppl:.4f}")
+
     return ppl
-
-
 
 
     if args.save_model:
@@ -570,14 +576,6 @@ def main(argv=None):
 
 
 
-
-import itertools
-import csv
-import math
-import traceback
-
-
-
 if __name__ == "__main__":
-    main()   # 不要传 sys.argv[1:]
+    main()
 

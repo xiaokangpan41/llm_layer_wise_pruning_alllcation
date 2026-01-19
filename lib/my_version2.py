@@ -223,6 +223,153 @@ def return_given_alpha(alpha, sort_res, W_metric, tmp_metric, sum_before):
     return W_mask, cur_sparsity
 
 
+def collect_wrapped_stats_and_compute_layer_outs(
+        *,
+        layer,
+        subset,
+        inps,
+        outs,
+        nsamples: int,
+        is_opt: bool,
+        attention_mask=None,
+        position_ids=None,
+):
+    """
+    Collect scaler_row stats via forward hooks (WrappedGPT) and compute outs for this layer once.
+
+    Args:
+        layer: current transformer block (layers[i])
+        subset: dict(name -> module) from find_layers(layer)
+        inps, outs: calibration tensors (outs will be written in-place)
+        nsamples: how many samples to run
+        is_opt: whether OPT-like signature
+        attention_mask, position_ids: forward args
+    Returns:
+        wrapped_layers: dict(name -> WrappedGPT(module))
+    """
+    wrapped_layers = {name: WrappedGPT(subset[name]) for name in subset}
+
+    def add_batch(name):
+        def hook_fn(_, inp, out):
+            wrapped_layers[name].add_batch(inp[0].data, out.data)
+        return hook_fn
+
+    handles = []
+    try:
+        for name in wrapped_layers:
+            handles.append(subset[name].register_forward_hook(add_batch(name)))
+
+        for j in range(nsamples):
+            x = inps[j].unsqueeze(0)
+            if is_opt:
+                outs[j] = layer(x, attention_mask=attention_mask)[0]
+            else:
+                outs[j] = layer(x, attention_mask=attention_mask, position_ids=position_ids)[0]
+    finally:
+        for h in handles:
+            h.remove()
+
+    return wrapped_layers
+
+
+def compute_outlier_ratio_D_i_from_wanda_metric(
+        *,
+        subset: dict,
+        wrapped_layers: dict,
+        hyper_m: float,
+) -> float:
+    """
+    Compute D_i (outlier ratio) using Wanda metric:
+        A = |W| * sqrt(scaler_row)
+
+    Returns:
+        D_i as python float
+    """
+    layer_wmetric = []
+    for name in subset:
+        # scaler_row: shape [out_features] or similar; reshape to (1, -1) for broadcast
+        scaler = wrapped_layers[name].scaler_row.reshape((1, -1))
+        W_metric = torch.abs(subset[name].weight.data) * torch.sqrt(scaler)
+        layer_wmetric.append(W_metric)
+
+    layer_wmetric = torch.cat([torch.flatten(x.cpu()) for x in layer_wmetric])
+    out_ratio_layer = check_outlier_mean(layer_wmetric, hyper_m)
+    return float(out_ratio_layer)
+
+
+def compute_propagation_risk_R_i(
+        *,
+        model,
+        layers,
+        layer_idx: int,
+        inps,
+        attention_mask=None,
+        position_ids=None,
+        is_opt: bool,
+        # risk hypers
+        risk_k: int,
+        risk_probe: float,
+        risk_nsamples: int,
+        consider_current_layer_in_risk: bool,
+        risk_decay_type: str,          # "linear" | "exponential"
+        risk_decay: float,             # used when exponential
+        risk_decay_beta: float,        # used when linear
+):
+    """
+    Compute propagation risk R_i for layer `layer_idx` by:
+      - forward base outputs from layer i..j_end
+      - perturb layer i weights slightly (magnitude-based), forward again
+      - compute weighted rel_l2 drift across outputs, averaged over samples
+    """
+    i = layer_idx
+    j_start = i + 1
+    j_end = min(len(layers) - 1, i + risk_k)
+    j_end = _same_device_end(model, i, j_end)  # avoid cross-device forward
+
+    if j_start > j_end:
+        return 0.0
+
+    assert risk_decay_type in ["linear", "exponential"], "Invalid risk_decay_type"
+
+    risk_vals = []
+    n = min(risk_nsamples, inps.shape[0]) if hasattr(inps, "shape") else risk_nsamples
+
+    for j in range(n):
+        x0 = inps[j].unsqueeze(0)
+
+        base_outs = _forward_range(
+            layers, i, j_end, x0,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            is_opt=is_opt,
+        )
+        with _perturb_layer_magnitude(layers[i], probe_ratio=risk_probe):
+            pert_outs = _forward_range(
+                layers, i, j_end, x0,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                is_opt=is_opt,
+            )
+
+        start_t = 0 if consider_current_layer_in_risk else 1
+        risk_sum, w_sum = 0.0, 0.0
+
+        for t in range(start_t, len(base_outs)):
+            dist = t - start_t
+            if risk_decay_type == "linear":
+                w = max(0.0, 1.0 - risk_decay_beta * dist)
+            else:  # "exponential"
+                w = float(risk_decay ** dist)
+
+            d = _rel_l2(base_outs[t], pert_outs[t])
+            risk_sum += w * d
+            w_sum += w
+
+        risk_vals.append(risk_sum / max(w_sum, 1e-12))
+
+    return float(np.mean(risk_vals)) if len(risk_vals) > 0 else 0.0
+
+
 
 @torch.no_grad()
 def prune_wanda_outlier_plus(args, model, tokenizer, device=torch.device("cuda:0"), prune_n=0, prune_m=0):
@@ -287,80 +434,43 @@ def prune_wanda_outlier_plus(args, model, tokenizer, device=torch.device("cuda:0
             position_ids = position_ids.to(dev)
 
         # 1) Collect scaler_row stats via hooks (WrappedGPT) and also compute outs for this layer once.
-        wrapped_layers = {name: WrappedGPT(subset[name]) for name in subset}
-
-        def add_batch(name):
-            def tmp(_, inp, out):
-                wrapped_layers[name].add_batch(inp[0].data, out.data)
-            return tmp
-
-        handles = []
-        for name in wrapped_layers:
-            handles.append(subset[name].register_forward_hook(add_batch(name)))
-
-        for j in range(args.nsamples):
-            if is_opt:
-                outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
-            else:
-                outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids)[0]
-
-        for h in handles:
-            h.remove()
+        wrapped_layers = collect_wrapped_stats_and_compute_layer_outs(
+            layer=layer,
+            subset=subset,
+            inps=inps,
+            outs=outs,
+            nsamples=args.nsamples,
+            is_opt=is_opt,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+        )
 
         # 2) Compute D_i (outlier ratio) from Wanda metric A = |W| * sqrt(scaler_row)
-        layer_wmetric = []
-        for name in subset:
-            W_metric = torch.abs(subset[name].weight.data) * torch.sqrt(wrapped_layers[name].scaler_row.reshape((1, -1)))
-            layer_wmetric.append(W_metric)
-
-        layer_wmetric = torch.cat([torch.flatten(x.cpu()) for x in layer_wmetric])
-        out_ratio_layer = check_outlier_mean(layer_wmetric, args.Hyper_m)   # this is D_i
-        D_list.append(float(out_ratio_layer))
+        D_i = compute_outlier_ratio_D_i_from_wanda_metric(
+            subset=subset,
+            wrapped_layers=wrapped_layers,
+            hyper_m=args.Hyper_m,
+        )
+        D_list.append(D_i)
 
         # 3) Compute R_i (propagation risk) BEFORE swapping inps/outs
         #    Use the current inps[j] which is the true input to layer i.
-        j_start = i + 1
-        j_end = min(len(layers) - 1, i + risk_k)
-        j_end = _same_device_end(model, i, j_end)  # avoid cross-device forward
-
-        if j_start > j_end:
-            R_i = 0.0
-        else:
-            # To reduce cost, only use first `risk_nsamples` calibration samples
-            risk_vals = []
-            for j in range(min(risk_nsamples, args.nsamples)):
-                x0 = inps[j].unsqueeze(0)
-
-                base_outs = _forward_range(
-                    layers, i, j_end, x0,
-                    attention_mask=attention_mask, position_ids=position_ids, is_opt=is_opt
-                )
-                with _perturb_layer_magnitude(layers[i], probe_ratio=risk_probe):
-                    pert_outs = _forward_range(
-                        layers, i, j_end, x0,
-                        attention_mask=attention_mask, position_ids=position_ids, is_opt=is_opt
-                    )
-
-                start_t = 0 if consider_current_layer_in_risk else 1
-                risk_sum, w_sum = 0.0, 0.0
-                L = len(base_outs) - start_t
-                assert L > 0
-                for t in range(start_t, len(base_outs)):
-                    dist = t - start_t
-                    if risk_decay_type == "linear":
-                        w = 1.0 - risk_decay_beta * (L - 1) / 2.0 + risk_decay_beta * dist
-                        w = max(0.0, w)
-                    else:
-                        w = float(risk_decay ** dist)
-
-                    d = _rel_l2(base_outs[t], pert_outs[t])
-                    risk_sum += w * d
-                    w_sum += w
-
-                risk_vals.append(risk_sum / max(w_sum, 1e-12))
-
-            R_i = float(np.mean(risk_vals)) if len(risk_vals) > 0 else 0.0
-
+        R_i = compute_propagation_risk_R_i(
+            model=model,
+            layers=layers,
+            layer_idx=i,
+            inps=inps,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            is_opt=is_opt,
+            risk_k=risk_k,
+            risk_probe=risk_probe,
+            risk_nsamples=min(risk_nsamples, args.nsamples),
+            consider_current_layer_in_risk=consider_current_layer_in_risk,
+            risk_decay_type=risk_decay_type,
+            risk_decay=risk_decay,
+            risk_decay_beta=risk_decay_beta,
+        )
         R_raw.append(float(R_i))
 
         # 4) Now swap to feed next layer (outs computed above is correct for unpruned model)
@@ -426,7 +536,51 @@ def prune_wanda_outlier_plus(args, model, tokenizer, device=torch.device("cuda:0
             if is_opt:
                 outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
             else:
-                outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids)[0]
+                hs = inps[j].unsqueeze(0)
+
+                # 确保 position_ids 在同一个 device
+                pid = position_ids
+                if pid is not None and pid.device != hs.device:
+                    pid = pid.to(hs.device)
+
+                # 关键：计算 (cos, sin)
+                pos_emb = None
+
+                # 优先：model 级别 rotary_emb（更稳定）
+                rotary = None
+                if hasattr(model, "model") and hasattr(model.model, "rotary_emb"):
+                    rotary = model.model.rotary_emb
+
+                # 其次：layer 级别 rotary_emb（有些版本存在）
+                if rotary is None and hasattr(layer, "self_attn") and hasattr(layer.self_attn, "rotary_emb"):
+                    rotary = layer.self_attn.rotary_emb
+
+                if rotary is not None and pid is not None:
+                    pos_emb = rotary(hs, pid)  # 期望返回 (cos, sin)
+
+                if pos_emb is None:
+                    raise RuntimeError(
+                        "Failed to build position_embeddings=(cos, sin). "
+                        "rotary_emb not found or returned None. "
+                        "Check transformers llama version / rotary embedding API."
+                    )
+
+                # 调用 layer（新版本需要 position_embeddings）
+                try:
+                    outs[j] = layer(
+                        hs,
+                        attention_mask=attention_mask,
+                        position_ids=pid,
+                        position_embeddings=pos_emb,
+                    )[0]
+                except TypeError:
+                    # 老版本不支持 position_embeddings，就回退原调用
+                    outs[j] = layer(
+                        hs,
+                        attention_mask=attention_mask,
+                        position_ids=pid,
+                    )[0]
+
 
         for h in handles:
             h.remove()
@@ -488,9 +642,51 @@ def prune_wanda_outlier_plus(args, model, tokenizer, device=torch.device("cuda:0
             if is_opt:
                 outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
             else:
-                outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids)[0]
+                hs = inps[j].unsqueeze(0)
 
-        inps, outs = outs, inps
+                # 确保 position_ids 在同一个 device
+                pid = position_ids
+                if pid is not None and pid.device != hs.device:
+                    pid = pid.to(hs.device)
+
+                # 关键：计算 (cos, sin)
+                pos_emb = None
+
+                # 优先：model 级别 rotary_emb（更稳定）
+                rotary = None
+                if hasattr(model, "model") and hasattr(model.model, "rotary_emb"):
+                    rotary = model.model.rotary_emb
+
+                # 其次：layer 级别 rotary_emb（有些版本存在）
+                if rotary is None and hasattr(layer, "self_attn") and hasattr(layer.self_attn, "rotary_emb"):
+                    rotary = layer.self_attn.rotary_emb
+
+                if rotary is not None and pid is not None:
+                    pos_emb = rotary(hs, pid)  # 期望返回 (cos, sin)
+
+                if pos_emb is None:
+                    raise RuntimeError(
+                        "Failed to build position_embeddings=(cos, sin). "
+                        "rotary_emb not found or returned None. "
+                        "Check transformers llama version / rotary embedding API."
+                    )
+
+                # 调用 layer（新版本需要 position_embeddings）
+                try:
+                    outs[j] = layer(
+                        hs,
+                        attention_mask=attention_mask,
+                        position_ids=pid,
+                        position_embeddings=pos_emb,
+                    )[0]
+                except TypeError:
+                    # 老版本不支持 position_embeddings，就回退原调用
+                    outs[j] = layer(
+                        hs,
+                        attention_mask=attention_mask,
+                        position_ids=pid,
+                    )[0]
+
 
     model.config.use_cache = use_cache
     torch.cuda.empty_cache()
