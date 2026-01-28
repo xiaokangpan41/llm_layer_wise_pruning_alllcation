@@ -1,0 +1,11 @@
+risk_k,risk_probe,risk_decay_type,risk_decay,risk_decay_beta,risk_alpha,consider_current_layer,perturb_following,ppl,seconds,exit_code
+1,0.01,linear,NaN,0.05,0.01,True,True,33.0227,447,0
+1,0.01,linear,NaN,0.05,0.01,True,False,33.0227,443,0
+1,0.01,linear,NaN,0.05,0.01,False,True,33.0227,443,0
+1,0.01,linear,NaN,0.05,0.01,False,False,33.0227,443,0
+1,0.01,linear,NaN,0.05,0.05,True,True,33.1773,443,0
+1,0.01,linear,NaN,0.05,0.05,True,False,33.1773,443,0
+1,0.01,linear,NaN,0.05,0.05,False,True,33.1773,442,0
+1,0.01,linear,NaN,0.05,0.05,False,False,33.1773,569,0
+1,0.01,linear,NaN,0.05,0.1,True,True,33.1022,600,0
+1,0.01,linear,NaN,0.05,0.1,True,False,33.1022,544,0
