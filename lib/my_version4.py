@@ -39,6 +39,7 @@ def _forward_range(layers, start, end, h, *, attention_mask=None, position_ids=N
     return h
 
 
+
 @contextmanager
 def _perturb_layer_magnitude(layers: list[nn.Module], probe_ratio: float = 0.02, desired_sparsity_ratio: float = 0.7, perturb_following: bool = False):
     """
@@ -63,7 +64,7 @@ def _perturb_layer_magnitude(layers: list[nn.Module], probe_ratio: float = 0.02,
                     thresh = torch.kthvalue(flat, k).values
                     mask = (W.data.abs() > thresh).to(W.data.dtype)
                     W.data.mul_(mask)
-    
+
     try:
         yield
     finally:
@@ -544,9 +545,50 @@ def prune_wanda_outlier_plus(args, model, tokenizer, device=torch.device("cuda:0
             if is_opt:
                 outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
             else:
-                outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids)[0]
+                hs = inps[j].unsqueeze(0)
 
-        inps, outs = outs, inps
+                # 确保 position_ids 在同一个 device
+                pid = position_ids
+                if pid is not None and pid.device != hs.device:
+                    pid = pid.to(hs.device)
+
+                # 关键：计算 (cos, sin)
+                pos_emb = None
+
+                # 优先：model 级别 rotary_emb（更稳定）
+                rotary = None
+                if hasattr(model, "model") and hasattr(model.model, "rotary_emb"):
+                    rotary = model.model.rotary_emb
+
+                # 其次：layer 级别 rotary_emb（有些版本存在）
+                if rotary is None and hasattr(layer, "self_attn") and hasattr(layer.self_attn, "rotary_emb"):
+                    rotary = layer.self_attn.rotary_emb
+
+                if rotary is not None and pid is not None:
+                    pos_emb = rotary(hs, pid)  # 期望返回 (cos, sin)
+
+                if pos_emb is None:
+                    raise RuntimeError(
+                        "Failed to build position_embeddings=(cos, sin). "
+                        "rotary_emb not found or returned None. "
+                        "Check transformers llama version / rotary embedding API."
+                    )
+
+                # 调用 layer（新版本需要 position_embeddings）
+                try:
+                    outs[j] = layer(
+                        hs,
+                        attention_mask=attention_mask,
+                        position_ids=pid,
+                        position_embeddings=pos_emb,
+                    )[0]
+                except TypeError:
+                    # 老版本不支持 position_embeddings，就回退原调用
+                    outs[j] = layer(
+                        hs,
+                        attention_mask=attention_mask,
+                        position_ids=pid,
+                    )[0]
 
 
         for h in handles:
@@ -609,9 +651,50 @@ def prune_wanda_outlier_plus(args, model, tokenizer, device=torch.device("cuda:0
             if is_opt:
                 outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
             else:
-                outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids)[0]
+                hs = inps[j].unsqueeze(0)
 
-        inps, outs = outs, inps
+                # 确保 position_ids 在同一个 device
+                pid = position_ids
+                if pid is not None and pid.device != hs.device:
+                    pid = pid.to(hs.device)
+
+                # 关键：计算 (cos, sin)
+                pos_emb = None
+
+                # 优先：model 级别 rotary_emb（更稳定）
+                rotary = None
+                if hasattr(model, "model") and hasattr(model.model, "rotary_emb"):
+                    rotary = model.model.rotary_emb
+
+                # 其次：layer 级别 rotary_emb（有些版本存在）
+                if rotary is None and hasattr(layer, "self_attn") and hasattr(layer.self_attn, "rotary_emb"):
+                    rotary = layer.self_attn.rotary_emb
+
+                if rotary is not None and pid is not None:
+                    pos_emb = rotary(hs, pid)  # 期望返回 (cos, sin)
+
+                if pos_emb is None:
+                    raise RuntimeError(
+                        "Failed to build position_embeddings=(cos, sin). "
+                        "rotary_emb not found or returned None. "
+                        "Check transformers llama version / rotary embedding API."
+                    )
+
+                # 调用 layer（新版本需要 position_embeddings）
+                try:
+                    outs[j] = layer(
+                        hs,
+                        attention_mask=attention_mask,
+                        position_ids=pid,
+                        position_embeddings=pos_emb,
+                    )[0]
+                except TypeError:
+                    # 老版本不支持 position_embeddings，就回退原调用
+                    outs[j] = layer(
+                        hs,
+                        attention_mask=attention_mask,
+                        position_ids=pid,
+                    )[0]
 
 
     model.config.use_cache = use_cache
