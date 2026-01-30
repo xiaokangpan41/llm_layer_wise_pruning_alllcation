@@ -1,1 +1,1 @@
-from tasks.eval_harness import EvalHarnessAdaptor
+from .eval_harness import EvalHarnessAdaptor

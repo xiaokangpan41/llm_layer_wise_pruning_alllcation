@@ -1,3 +1,4 @@
 llm_weights/
 __pycache__/
 lib/__pycache__/
+*.egg-info/
