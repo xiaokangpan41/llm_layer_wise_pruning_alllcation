@@ -62,7 +62,10 @@ if __name__ == '__main__':
         
         def eval(self, batch):
             
-            from tasks.eval_harness import tokenizer
+            try:
+                from tasks.eval_harness import tokenizer  # when running from within `zero_shot_benchmark/`
+            except ModuleNotFoundError:
+                from zero_shot_benchmark.tasks.eval_harness import tokenizer
             
             mask_loss = []
             each_correct = []

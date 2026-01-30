@@ -6,7 +6,7 @@ from lm_eval.base import LM
 from tqdm import tqdm
 import numpy as np
 
-from tasks.util import sample_batch, shrink_seq
+from .util import sample_batch, shrink_seq
 import multiprocessing
 import ftfy
 
@@ -103,5 +103,4 @@ class EvalHarnessAdaptor(LM):
                 output.append((float(-loss), bool(correct)))
 
         return output
-
 

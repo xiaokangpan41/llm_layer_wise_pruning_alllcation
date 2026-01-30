@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "owl-llm-pruning"
+version = "0.0.0"
+description = "Outlier Weighed Layerwise Sparsity (OWL): layer-wise pruning for LLMs"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+dependencies = [
+  "accelerate",
+  "datasets",
+  "evaluate",
+  "ftfy",
+  "huggingface-hub",
+  "lm-eval",
+  "numpy",
+  "peft",
+  "sentencepiece",
+  "torch",
+  "torchaudio",
+  "torchvision",
+  "tqdm",
+  "transformers",
+  "wandb",
+]
+
+[tool.setuptools]
+py-modules = ["main"]
+packages = ["lib", "lora_ft", "zero_shot_benchmark", "zero_shot_benchmark.tasks"]
+

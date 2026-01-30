@@ -1,8 +1,2 @@
-torch
-torchvision
-torchaudio
-transformers
-datasets
-wandb
-sentencepiece
-accelerate
+# Deprecated: use `pyproject.toml` (works with uv) and install the project.
+-e .

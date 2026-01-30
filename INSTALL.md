@@ -1,4 +1,18 @@
 # Installation  
+## Option A (recommended): uv
+Step 1: Create a virtual environment:
+```
+uv venv -p 3.9
+source .venv/bin/activate
+```
+Step 2: Install dependencies from `pyproject.toml`:
+```
+uv pip install -e .
+```
+
+> Note: Installing CUDA-enabled PyTorch can be platform-specific. If you rely on a specific CUDA toolkit, consider using the conda-based setup below for PyTorch, then run `uv pip install -e .` to install the remaining Python deps.
+
+## Option B: conda (legacy)
 Step 1: Create a new conda environment:
 ```
 conda create -n prune_llm python=3.9
