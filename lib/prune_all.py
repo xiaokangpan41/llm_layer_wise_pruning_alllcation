@@ -87,8 +87,18 @@ def prepare_calibration_input_opt(model, dataloader, device):
         layers = model.model.layers
 
     # dev = model.hf_device_map["model.embed_tokens"]
-    if "model.embed_tokens" in model.hf_device_map:
-        device = model.hf_device_map["model.embed_tokens"]
+    hf_device_map = getattr(model, "hf_device_map", None)
+    if isinstance(hf_device_map, dict):
+        # Transformers/Accelerate may use different module paths depending on architecture/version.
+        for k in (
+            "model.embed_tokens",
+            "model.decoder.embed_tokens",
+            "model.model.embed_tokens",
+            "model.model.decoder.embed_tokens",
+        ):
+            if k in hf_device_map:
+                device = hf_device_map[k]
+                break
 
     dtype = next(iter(model.parameters())).dtype
     inps = torch.zeros((128, model.seqlen, model.config.hidden_size), dtype=dtype, device=device)
@@ -144,11 +154,33 @@ def find_layers(module, layers=[nn.Linear], name=''):
         ))
     return res
 
+def _get_model_layers(model):
+    """
+    Return the per-block transformer layers for common causal LM architectures.
+    - LLaMA-style: model.model.layers
+    - OPT-style:   model.model.decoder.layers
+    - GPT2-style:  model.transformer.h
+    """
+    core = getattr(model, "model", None)
+    if core is not None:
+        decoder = getattr(core, "decoder", None)
+        if decoder is not None and hasattr(decoder, "layers"):
+            return decoder.layers
+        if hasattr(core, "layers"):
+            return core.layers
+    transformer = getattr(model, "transformer", None)
+    if transformer is not None and hasattr(transformer, "h"):
+        return transformer.h
+    raise AttributeError(
+        f"Unsupported model architecture for layer access: {type(model).__name__}. "
+        "Expected `model.model.layers` or `model.model.decoder.layers`."
+    )
+
 def check_sparsity(model):
     use_cache = model.config.use_cache
     model.config.use_cache = False
 
-    layers = model.model.layers
+    layers = _get_model_layers(model)
     count = 0
     total_params = 0
     for i in range(len(layers)):
@@ -332,7 +364,7 @@ def prune_wanda_outlier_structure_special(args, model, tokenizer, device=torch.d
         layer = layers[i]
 
         subset = find_layers(layer)
-        if f"model.layers.{i}" in model.hf_device_map:   ## handle the case for llama-30B and llama-65B, when the device map has multiple GPUs;
+        if hasattr(model, "hf_device_map") and f"model.layers.{i}" in model.hf_device_map:   ## handle multi-GPU device map
             dev = model.hf_device_map[f"model.layers.{i}"]
             inps, outs, attention_mask, position_ids = inps.to(dev), outs.to(dev), attention_mask.to(dev), position_ids.to(dev)
 
@@ -432,7 +464,7 @@ def prune_wanda_outlier_structure_special(args, model, tokenizer, device=torch.d
     for i in range(len(layers)):
         layer = layers[i]
         subset = find_layers(layer)
-        if f"model.layers.{i}" in model.hf_device_map:   ## handle the case for llama-30B and llama-65B, when the device map has multiple GPUs;
+        if hasattr(model, "hf_device_map") and f"model.layers.{i}" in model.hf_device_map:   ## handle multi-GPU device map
             dev = model.hf_device_map[f"model.layers.{i}"]
             inps, outs, attention_mask, position_ids = inps.to(dev), outs.to(dev), attention_mask.to(dev), position_ids.to(dev)
 
@@ -510,7 +542,7 @@ def prune_wanda(args, model, tokenizer, device=torch.device("cuda:0"), prune_n=0
         layer = layers[i]
         subset = find_layers(layer)
 
-        if f"model.layers.{i}" in model.hf_device_map:   ## handle the case for llama-30B and llama-65B, when the device map has multiple GPUs;
+        if hasattr(model, "hf_device_map") and f"model.layers.{i}" in model.hf_device_map:   ## handle multi-GPU device map
             dev = model.hf_device_map[f"model.layers.{i}"]
             inps, outs, attention_mask, position_ids = inps.to(dev), outs.to(dev), attention_mask.to(dev), position_ids.to(dev)
 
@@ -624,7 +656,7 @@ def prune_mag_outlier(args, model, tokenizer, device=torch.device("cuda:0"), pru
 
         subset = find_layers(layer)
 
-        if f"model.layers.{i}" in model.hf_device_map:   ## handle the case for llama-30B and llama-65B, when the device map has multiple GPUs;
+        if hasattr(model, "hf_device_map") and f"model.layers.{i}" in model.hf_device_map:   ## handle multi-GPU device map
             dev = model.hf_device_map[f"model.layers.{i}"]
             inps, outs, attention_mask, position_ids = inps.to(dev), outs.to(dev), attention_mask.to(dev), position_ids.to(dev)
 
@@ -779,7 +811,7 @@ def prune_wanda_outlier_structure(args, model, tokenizer, device=torch.device("c
         layer = layers[i]
 
         subset = find_layers(layer)
-        if f"model.layers.{i}" in model.hf_device_map:   ## handle the case for llama-30B and llama-65B, when the device map has multiple GPUs;
+        if hasattr(model, "hf_device_map") and f"model.layers.{i}" in model.hf_device_map:   ## handle multi-GPU device map
             dev = model.hf_device_map[f"model.layers.{i}"]
             inps, outs, attention_mask, position_ids = inps.to(dev), outs.to(dev), attention_mask.to(dev), position_ids.to(dev)
 
@@ -868,7 +900,7 @@ def prune_wanda_outlier_structure(args, model, tokenizer, device=torch.device("c
     for i in range(len(layers)):
         layer = layers[i]
         subset = find_layers(layer)
-        if f"model.layers.{i}" in model.hf_device_map:   ## handle the case for llama-30B and llama-65B, when the device map has multiple GPUs;
+        if hasattr(model, "hf_device_map") and f"model.layers.{i}" in model.hf_device_map:   ## handle multi-GPU device map
             dev = model.hf_device_map[f"model.layers.{i}"]
             inps, outs, attention_mask, position_ids = inps.to(dev), outs.to(dev), attention_mask.to(dev), position_ids.to(dev)
 
@@ -933,6 +965,7 @@ def prune_wanda_outlier(args, model, tokenizer, device=torch.device("cuda:0"), p
     all_layer_ratio=[]
     use_cache = model.config.use_cache
     model.config.use_cache = False
+    hf_device_map = getattr(model, "hf_device_map", None)
 
     print("loading calibdation data")
     dataloader, _ = get_loaders("c4",nsamples=args.nsamples,seed=args.seed,seqlen=2048,tokenizer=tokenizer)
@@ -962,8 +995,8 @@ def prune_wanda_outlier(args, model, tokenizer, device=torch.device("cuda:0"), p
 
         subset = find_layers(layer)
 
-        if f"model.layers.{i}" in model.hf_device_map:   ## handle the case for llama-30B and llama-65B, when the device map has multiple GPUs;
-            dev = model.hf_device_map[f"model.layers.{i}"]
+        if isinstance(hf_device_map, dict) and f"model.layers.{i}" in hf_device_map:   ## handle multi-GPU device map
+            dev = hf_device_map[f"model.layers.{i}"]
             inps, outs, attention_mask, position_ids = inps.to(dev), outs.to(dev), attention_mask.to(dev), position_ids.to(dev)
 
         wrapped_layers = {}
@@ -1091,7 +1124,7 @@ def prune_wanda_outlier(args, model, tokenizer, device=torch.device("cuda:0"), p
 
         subset = find_layers(layer)
 
-        if f"model.layers.{i}" in model.hf_device_map:   ## handle the case for llama-30B and llama-65B, when the device map has multiple GPUs;
+        if hasattr(model, "hf_device_map") and f"model.layers.{i}" in model.hf_device_map:   ## handle multi-GPU device map
             dev = model.hf_device_map[f"model.layers.{i}"]
             inps, outs, attention_mask, position_ids = inps.to(dev), outs.to(dev), attention_mask.to(dev), position_ids.to(dev)
 
@@ -1198,9 +1231,18 @@ def prune_sparsegpt(args, model, tokenizer, dev, prune_n=0, prune_m=0):
     use_cache = model.config.use_cache
     model.config.use_cache = False
     layers = model.model.layers
+    hf_device_map = getattr(model, "hf_device_map", None)
 
-    if "model.embed_tokens" in model.hf_device_map:
-        dev = model.hf_device_map["model.embed_tokens"]
+    if isinstance(hf_device_map, dict):
+        for k in (
+            "model.embed_tokens",
+            "model.decoder.embed_tokens",
+            "model.model.embed_tokens",
+            "model.model.decoder.embed_tokens",
+        ):
+            if k in hf_device_map:
+                dev = hf_device_map[k]
+                break
 
     dtype = next(iter(model.parameters())).dtype
     inps = torch.zeros(
@@ -1235,8 +1277,8 @@ def prune_sparsegpt(args, model, tokenizer, dev, prune_n=0, prune_m=0):
 
     for i in range(len(layers)):
         layer = layers[i]
-        if f"model.layers.{i}" in model.hf_device_map:
-            dev = model.hf_device_map[f"model.layers.{i}"]
+        if isinstance(hf_device_map, dict) and f"model.layers.{i}" in hf_device_map:
+            dev = hf_device_map[f"model.layers.{i}"]
             print(f"layer {i} device {dev}")
             inps, outs, attention_mask, position_ids = inps.to(dev), outs.to(dev), attention_mask.to(dev), position_ids.to(dev)
 
@@ -1293,6 +1335,7 @@ def prune_sparsegpt_outlier(args, model, tokenizer, dev, prune_n=0, prune_m=0):
     all_layer_ratio=[]
     use_cache = model.config.use_cache
     model.config.use_cache = False
+    hf_device_map = getattr(model, "hf_device_map", None)
 
     print("loading calibdation data")
     dataloader, _ = get_loaders("c4",nsamples=args.nsamples,seed=args.seed,seqlen=2048,tokenizer=tokenizer)
@@ -1322,8 +1365,8 @@ def prune_sparsegpt_outlier(args, model, tokenizer, dev, prune_n=0, prune_m=0):
 
         subset = find_layers(layer)
 
-        if f"model.layers.{i}" in model.hf_device_map:   ## handle the case for llama-30B and llama-65B, when the device map has multiple GPUs;
-            dev = model.hf_device_map[f"model.layers.{i}"]
+        if isinstance(hf_device_map, dict) and f"model.layers.{i}" in hf_device_map:   ## handle multi-GPU device map
+            dev = hf_device_map[f"model.layers.{i}"]
             inps, outs, attention_mask, position_ids = inps.to(dev), outs.to(dev), attention_mask.to(dev), position_ids.to(dev)
 
         wrapped_layers = {}
@@ -1439,8 +1482,16 @@ def prune_sparsegpt_outlier(args, model, tokenizer, dev, prune_n=0, prune_m=0):
     else:
         layers = model.model.layers
 
-    if "model.embed_tokens" in model.hf_device_map:
-        dev = model.hf_device_map["model.embed_tokens"]
+    if isinstance(hf_device_map, dict):
+        for k in (
+            "model.embed_tokens",
+            "model.decoder.embed_tokens",
+            "model.model.embed_tokens",
+            "model.model.decoder.embed_tokens",
+        ):
+            if k in hf_device_map:
+                dev = hf_device_map[k]
+                break
 
     dtype = next(iter(model.parameters())).dtype
     inps = torch.zeros(
@@ -1485,8 +1536,8 @@ def prune_sparsegpt_outlier(args, model, tokenizer, dev, prune_n=0, prune_m=0):
 
 
         layer = layers[i]
-        if f"model.layers.{i}" in model.hf_device_map:
-            dev = model.hf_device_map[f"model.layers.{i}"]
+        if isinstance(hf_device_map, dict) and f"model.layers.{i}" in hf_device_map:
+            dev = hf_device_map[f"model.layers.{i}"]
             print(f"layer {i} device {dev}")
             inps, outs, attention_mask, position_ids = inps.to(dev), outs.to(dev), attention_mask.to(dev), position_ids.to(dev)
             # inps, outs, attention_mask = inps.to(dev), outs.to(dev), attention_mask.to(dev)

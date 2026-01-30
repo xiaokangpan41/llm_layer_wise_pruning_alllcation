@@ -38,7 +38,6 @@ from accelerate import Accelerator, DistributedType
 from accelerate.logging import get_logger
 from accelerate.utils import set_seed
 from datasets import load_dataset
-from huggingface_hub import Repository, create_repo
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
@@ -61,18 +60,39 @@ logger = get_logger(__name__)
 
 require_version("datasets>=1.8.0", "To fix: pip install -r examples/pytorch/language-modeling/requirements.txt")
 
-def get_llm(model, cache_dir="llm_weights"):
+def get_llm(model, cache_dir="llm_weights", local_files_only=False):
     model = model.strip()  # 关键：去掉末尾空格/换行
-    assert os.path.isdir(model), f"Local model dir not found: {model}\nPWD={os.getcwd()}\nList parent={os.listdir(os.path.dirname(model))}"
+    if local_files_only and not os.path.isdir(model):
+        raise FileNotFoundError(
+            "Local model dir not found (and --local_files_only is set): "
+            f"{model}\nPWD={os.getcwd()}"
+        )
+    os.makedirs(cache_dir, exist_ok=True)
 
-    model = AutoModelForCausalLM.from_pretrained(
+    # Preload config to allow small compatibility tweaks without mutating weights.
+    config = AutoConfig.from_pretrained(
         model,
-        torch_dtype=torch.float16,
+        cache_dir=cache_dir,
+        local_files_only=local_files_only,
+    )
+    # Newer Transformers may emit a warning for OPT checkpoints where tying shouldn't be applied.
+    if getattr(config, "model_type", None) == "opt" and hasattr(config, "tie_word_embeddings"):
+        config.tie_word_embeddings = False
+
+    common_kwargs = dict(
         cache_dir=cache_dir,
         low_cpu_mem_usage=True,
         device_map="auto",
-        local_files_only=True,   # 关键：强制只用本地文件
+        local_files_only=local_files_only,
+        config=config,
     )
+    # `torch_dtype` has been deprecated in some Transformers versions in favor of `dtype`.
+    try:
+        model = AutoModelForCausalLM.from_pretrained(model, dtype=torch.float16, **common_kwargs)
+    except TypeError as e:
+        if "dtype" not in str(e):
+            raise
+        model = AutoModelForCausalLM.from_pretrained(model, torch_dtype=torch.float16, **common_kwargs)
 
     model.seqlen = 2048
     return model
@@ -174,6 +194,11 @@ def main(argv=None):
     parser.add_argument("--sparsity_type", type=str)
     parser.add_argument("--prune_method", type=str)
     parser.add_argument("--cache_dir", default="llm_weights", type=str )
+    parser.add_argument(
+        "--local_files_only",
+        action="store_true",
+        help="Only load model/tokenizer from local path/cache; do not download from Hugging Face.",
+    )
     parser.add_argument('--use_variant', action="store_true", help="whether to use the wanda variant described in the appendix")
     parser.add_argument('--save', type=str, default=None, help='Path to save results.')
     parser.add_argument('--save_model', type=str, default=None, help='Path to save the pruned model.')
@@ -464,7 +489,7 @@ def main(argv=None):
 
     # model_name = args.model.split("/")[-1]
     # print(f"loading llm model {args.model}")
-    model = get_llm(args.model, args.cache_dir)
+    model = get_llm(args.model, args.cache_dir, local_files_only=args.local_files_only)
 
     # print ("model is =================================================================================")
     # print (model.__class__.__name__)
@@ -474,10 +499,20 @@ def main(argv=None):
     model.eval()
 
     if "opt" in args.model:
-        tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=False)
+        tokenizer = AutoTokenizer.from_pretrained(
+            args.model,
+            use_fast=False,
+            cache_dir=args.cache_dir,
+            local_files_only=args.local_files_only,
+        )
     elif "llama" in args.model:
 
-        tokenizer = LlamaTokenizer.from_pretrained(args.model, use_fast=False)
+        tokenizer = LlamaTokenizer.from_pretrained(
+            args.model,
+            use_fast=False,
+            cache_dir=args.cache_dir,
+            local_files_only=args.local_files_only,
+        )
 
 
 
@@ -585,4 +620,3 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
-
